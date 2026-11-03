@@ -77,12 +77,31 @@ export const WorldMap: React.FC<WorldMapProps> = ({
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const [isDragging, setIsDragging] = useState(false);
   const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
+  const [containerWidth, setContainerWidth] = useState(
+    typeof window !== 'undefined' ? window.innerWidth : 960
+  );
   const [hoveredCountry, setHoveredCountry] = useState<{
     country: Country | null;
     id: string;
     x: number;
     y: number;
   } | null>(null);
+
+  // Отслеживание реальной ширины контейнера карты для адаптивной четкости шрифтов
+  useEffect(() => {
+    const updateWidth = () => {
+      if (containerRef.current) {
+        setContainerWidth(containerRef.current.clientWidth);
+      }
+    };
+    updateWidth();
+    window.addEventListener('resize', updateWidth);
+    return () => window.removeEventListener('resize', updateWidth);
+  }, []);
+
+  const isMobile = containerWidth < 640;
+  // Коэффициент отображения: сколько экранных пикселей приходится на 1 единицу SVG viewBox (960)
+  const displayScale = Math.max(0.32, Math.min(1.4, containerWidth / VIEW_BOX_WIDTH));
 
   // d3-geo проекция Natural Earth
   const projection = useMemo(() => {
@@ -137,13 +156,28 @@ export const WorldMap: React.FC<WorldMapProps> = ({
   }, [continentFocus, showCapitalPin, isExploreMode]);
 
   const handleZoom = (delta: number) => {
-    setZoom((prev) => Math.min(Math.max(prev + delta, 0.8), 7));
+    setZoom((prev) => Math.min(Math.max(prev + delta, 0.8), 9));
   };
 
   const handleReset = () => {
     setZoom(1);
     setPan({ x: 0, y: 0 });
   };
+
+  // Расчет идеального масштаба: на мобильных устройствах делаем заметно крупнее!
+  const calculateIdealZoom = useCallback(
+    (countryId: string) => {
+      if (GIANT_COUNTRY_IDS.has(countryId)) {
+        return isMobile ? 3.4 : 2.6;
+      }
+      if (LARGE_COUNTRY_IDS.has(countryId)) {
+        return isMobile ? 4.6 : 3.6;
+      }
+      // Обычные и малые страны на мобильном приближаем сильнее, чтобы страна и столица были крупными
+      return isMobile ? 6.2 : 4.8;
+    },
+    [isMobile]
+  );
 
   // Центровка и УКРУПНЕНИЕ по координатам
   const focusOnCoords = useCallback(
@@ -167,28 +201,18 @@ export const WorldMap: React.FC<WorldMapProps> = ({
   useEffect(() => {
     if (isExploreMode) return; // В режиме исследования при наведении НЕ масштабируем!
     if (pinCountry && showCapitalPin && pinCountry.capitalCoords) {
-      let idealZoom = 4.2;
-      if (GIANT_COUNTRY_IDS.has(pinCountry.id)) {
-        idealZoom = 2.4;
-      } else if (LARGE_COUNTRY_IDS.has(pinCountry.id)) {
-        idealZoom = 3.2;
-      }
+      const idealZoom = calculateIdealZoom(pinCountry.id);
       focusOnCoords(pinCountry.capitalCoords, idealZoom);
     }
-  }, [pinCountry, showCapitalPin, isExploreMode, focusOnCoords]);
+  }, [pinCountry, showCapitalPin, isExploreMode, focusOnCoords, calculateIdealZoom]);
 
   // Принудительный зум в режиме исследования: СТРОГО только по кнопке «Приблизить» или focusTrigger
   useEffect(() => {
     if (focusTrigger > 0 && pinCountry?.capitalCoords) {
-      let idealZoom = 4.2;
-      if (GIANT_COUNTRY_IDS.has(pinCountry.id)) {
-        idealZoom = 2.4;
-      } else if (LARGE_COUNTRY_IDS.has(pinCountry.id)) {
-        idealZoom = 3.2;
-      }
+      const idealZoom = calculateIdealZoom(pinCountry.id);
       focusOnCoords(pinCountry.capitalCoords, idealZoom);
     }
-  }, [focusTrigger, pinCountry, focusOnCoords]);
+  }, [focusTrigger, pinCountry, focusOnCoords, calculateIdealZoom]);
 
   // Перемещение мыши (панорамирование)
   const handleMouseDown = (e: React.MouseEvent) => {
@@ -208,6 +232,27 @@ export const WorldMap: React.FC<WorldMapProps> = ({
   };
 
   const handleMouseUp = () => {
+    setIsDragging(false);
+  };
+
+  // Сенсорное управление на мобильных устройствах (тач-панорамирование)
+  const handleTouchStart = (e: React.TouchEvent) => {
+    if (!interactive || e.touches.length !== 1) return;
+    const touch = e.touches[0];
+    setIsDragging(true);
+    setDragStart({ x: touch.clientX - pan.x, y: touch.clientY - pan.y });
+  };
+
+  const handleTouchMove = (e: React.TouchEvent) => {
+    if (!interactive || !isDragging || e.touches.length !== 1) return;
+    const touch = e.touches[0];
+    setPan({
+      x: touch.clientX - dragStart.x,
+      y: touch.clientY - dragStart.y,
+    });
+  };
+
+  const handleTouchEnd = () => {
     setIsDragging(false);
   };
 
@@ -245,21 +290,42 @@ export const WorldMap: React.FC<WorldMapProps> = ({
     };
   }, [shouldShowNeighborInfo, effectivePinCountry]);
 
-  // Расчет ширины компактной плашки со столицей и страной
-  const calloutDimensions = useMemo(() => {
-    if (!effectivePinCountry) return { width: 130, height: 26 };
+  // Расчет адаптивных размеров плашки со столицей и страной
+  // Гарантирует идеальную читаемость (13.5px / 12px) на любых экранах, включая мобильные!
+  const calloutLayout = useMemo(() => {
+    if (!effectivePinCountry) {
+      return {
+        svgWidth: 140 / displayScale,
+        svgHeight: 36 / displayScale,
+        text1Y: 13 / displayScale,
+        text2Y: 26 / displayScale,
+        font1: 11 / displayScale,
+        font2: 9.5 / displayScale,
+        radius: 6 / displayScale,
+      };
+    }
     const maxLen = Math.max(
       effectivePinCountry.name.length + 3,
-      effectivePinCountry.capital.length + 9
+      effectivePinCountry.capital.length + 10
     );
-    const width = Math.max(130, maxLen * 7.5);
-    return { width, height: 26 };
-  }, [effectivePinCountry]);
+    const targetScreenWidth = Math.max(isMobile ? 180 : 140, maxLen * (isMobile ? 9.6 : 8.2));
+    const targetScreenHeight = isMobile ? 44 : 34;
+
+    return {
+      svgWidth: targetScreenWidth / displayScale,
+      svgHeight: targetScreenHeight / displayScale,
+      text1Y: (isMobile ? 16.5 : 13) / displayScale,
+      text2Y: (isMobile ? 33 : 26) / displayScale,
+      font1: (isMobile ? 13.5 : 11.5) / displayScale,
+      font2: (isMobile ? 12 : 10) / displayScale,
+      radius: (isMobile ? 7 : 5) / displayScale,
+    };
+  }, [effectivePinCountry, isMobile, displayScale]);
 
   return (
     <div
       ref={containerRef}
-      className={`relative w-full h-full min-h-[300px] bg-slate-950 rounded-2xl border overflow-hidden select-none shadow-xl flex flex-col justify-between transition-colors ${
+      className={`relative w-full h-full min-h-[340px] sm:min-h-[400px] bg-slate-950 rounded-2xl border overflow-hidden select-none shadow-xl flex flex-col justify-between transition-colors ${
         isMapGuessPhase
           ? 'border-amber-500/50 shadow-amber-500/10'
           : 'border-slate-800/80'
@@ -267,6 +333,9 @@ export const WorldMap: React.FC<WorldMapProps> = ({
       onMouseDown={handleMouseDown}
       onMouseMove={handleMouseMove}
       onMouseUp={handleMouseUp}
+      onTouchStart={handleTouchStart}
+      onTouchMove={handleTouchMove}
+      onTouchEnd={handleTouchEnd}
       onMouseLeave={() => {
         handleMouseUp();
         setHoveredCountry(null);
@@ -467,12 +536,7 @@ export const WorldMap: React.FC<WorldMapProps> = ({
                     e.stopPropagation();
                     if (isExploreMode && country?.capitalCoords) {
                       // В режиме исследования масштабируем ровно один раз по клику на контуре страны!
-                      let idealZoom = 4.2;
-                      if (GIANT_COUNTRY_IDS.has(country.id)) {
-                        idealZoom = 2.4;
-                      } else if (LARGE_COUNTRY_IDS.has(country.id)) {
-                        idealZoom = 3.2;
-                      }
+                      const idealZoom = calculateIdealZoom(country.id);
                       focusOnCoords(country.capitalCoords, idealZoom);
                     }
                     if (onCountryClick) {
@@ -514,9 +578,10 @@ export const WorldMap: React.FC<WorldMapProps> = ({
                   if (effectivePinCountry && effectivePinCountry.id === neighborId) return null;
 
                   const is1st = neighborSets.firstDegree.has(neighborId);
-                  // Аккуратный масштаб: 9.5px для 1-го круга, 8px для 2-го круга
-                  const fontSize = (is1st ? 9.5 : 8) / zoom;
-                  const strokeWidth = 1.8 / zoom;
+                  // Адаптивный масштаб для идеальной читаемости на мобильных устройствах
+                  const targetFontSize = is1st ? (isMobile ? 12 : 9.8) : (isMobile ? 10 : 8.2);
+                  const fontSize = (targetFontSize / displayScale) / zoom;
+                  const strokeWidth = ((isMobile ? 2.6 : 1.8) / displayScale) / zoom;
 
                   return (
                     <text
@@ -540,7 +605,7 @@ export const WorldMap: React.FC<WorldMapProps> = ({
             </g>
           )}
 
-          {/* 2. АККУРАТНАЯ ТОЧКА СТОЛИЦЫ, СТРЕЛКА И ТАБЛИЧКА С НАЗВАНИЕМ СТРАНЫ И СТОЛИЦЫ */}
+          {/* 2. АККУРАТНАЯ ТОЧКА СТОЛИЦЫ, СТРЕЛКА И КРУПНАЯ ЧЁТКАЯ ТАБЛИЧКА С НАЗВАНИЕМ СТРАНЫ И СТОЛИЦЫ */}
           {pinPosition && effectivePinCountry && !isMapGuessPhase && (
             <g
               transform={`translate(${pinPosition.x}, ${pinPosition.y})`}
@@ -548,72 +613,76 @@ export const WorldMap: React.FC<WorldMapProps> = ({
             >
               {/* Пульсирующий внешний радарный круг */}
               <circle
-                r={20 / zoom}
+                r={((isMobile ? 26 : 20) / displayScale) / zoom}
                 fill="none"
                 stroke="#38bdf8"
-                strokeWidth={1.8 / zoom}
+                strokeWidth={((isMobile ? 2.2 : 1.8) / displayScale) / zoom}
                 strokeOpacity={0.65}
                 className="animate-ping"
               />
 
               {/* Золотистый ореол точки */}
               <circle
-                r={10 / zoom}
+                r={((isMobile ? 13 : 10) / displayScale) / zoom}
                 fill="#f59e0b"
                 fillOpacity={0.4}
                 stroke="#f59e0b"
-                strokeWidth={1.8 / zoom}
+                strokeWidth={((isMobile ? 2.2 : 1.8) / displayScale) / zoom}
               />
 
               {/* ТОЧКА СТОЛИЦЫ */}
               <circle
-                r={5 / zoom}
+                r={((isMobile ? 6.5 : 5) / displayScale) / zoom}
                 fill="#ffffff"
                 stroke="#d97706"
-                strokeWidth={2.2 / zoom}
+                strokeWidth={((isMobile ? 2.6 : 2.2) / displayScale) / zoom}
               />
 
               {/* СТРЕЛКА, УКАЗЫВАЮЩАЯ НА ТОЧКУ СТОЛИЦЫ */}
-              <g transform={`translate(0, ${-6 / zoom})`}>
+              <g transform={`translate(0, ${-((isMobile ? 8 : 6) / displayScale) / zoom})`}>
                 <polygon
-                  points={`0,0 ${-4 / zoom},${-8 / zoom} ${4 / zoom},${-8 / zoom}`}
+                  points={`0,0 ${-((isMobile ? 5 : 4) / displayScale) / zoom},${-((isMobile ? 9 : 8) / displayScale) / zoom} ${((isMobile ? 5 : 4) / displayScale) / zoom},${-((isMobile ? 9 : 8) / displayScale) / zoom}`}
                   fill="#f59e0b"
                   stroke="#ffffff"
-                  strokeWidth={0.8 / zoom}
+                  strokeWidth={((isMobile ? 1 : 0.8) / displayScale) / zoom}
                 />
                 <line
                   x1={0}
-                  y1={-7 / zoom}
+                  y1={-((isMobile ? 8 : 7) / displayScale) / zoom}
                   x2={0}
-                  y2={-14 / zoom}
+                  y2={-((isMobile ? 17 : 14) / displayScale) / zoom}
                   stroke="#f59e0b"
-                  strokeWidth={2.2 / zoom}
+                  strokeWidth={((isMobile ? 2.6 : 2.2) / displayScale) / zoom}
                   strokeLinecap="round"
                 />
               </g>
 
-              {/* АККУРАТНАЯ КОМПАКТНАЯ ТАБЛИЧКА С НАЗВАНИЕМ СТРАНЫ И СТОЛИЦЫ */}
-              <g transform={`translate(0, ${-16 / zoom - calloutDimensions.height / zoom})`}>
+              {/* ЧЁТКАЯ ЧИТАЕМАЯ ТАБЛИЧКА С НАЗВАНИЕМ СТРАНЫ И СТОЛИЦЫ (гарантирует читаемость на смартфонах) */}
+              <g
+                transform={`translate(0, ${
+                  -((isMobile ? 20 : 16) / displayScale) / zoom - calloutLayout.svgHeight / zoom
+                })`}
+              >
                 <rect
-                  x={(-calloutDimensions.width / 2) / zoom}
+                  x={(-calloutLayout.svgWidth / 2) / zoom}
                   y={0}
-                  width={calloutDimensions.width / zoom}
-                  height={calloutDimensions.height / zoom}
-                  rx={5 / zoom}
+                  width={calloutLayout.svgWidth / zoom}
+                  height={calloutLayout.svgHeight / zoom}
+                  rx={calloutLayout.radius / zoom}
                   fill="#030712"
                   stroke="#f59e0b"
-                  strokeWidth={1.2 / zoom}
+                  strokeWidth={((isMobile ? 1.6 : 1.2) / displayScale) / zoom}
                   fillOpacity={0.97}
-                  style={{ filter: 'drop-shadow(0 2px 6px rgba(0,0,0,0.8))' }}
+                  style={{ filter: 'drop-shadow(0 2px 8px rgba(0,0,0,0.85))' }}
                 />
 
                 {/* Строка 1: Флаг и Название страны */}
                 <text
                   textAnchor="middle"
                   x={0}
-                  y={10 / zoom}
+                  y={calloutLayout.text1Y / zoom}
                   fill="#ffffff"
-                  fontSize={9 / zoom}
+                  fontSize={calloutLayout.font1 / zoom}
                   fontWeight="700"
                   fontFamily="'Outfit', system-ui, sans-serif"
                 >
@@ -624,9 +693,9 @@ export const WorldMap: React.FC<WorldMapProps> = ({
                 <text
                   textAnchor="middle"
                   x={0}
-                  y={21 / zoom}
+                  y={calloutLayout.text2Y / zoom}
                   fill="#fbbf24"
-                  fontSize={8.5 / zoom}
+                  fontSize={calloutLayout.font2 / zoom}
                   fontWeight="700"
                   fontFamily="'Outfit', system-ui, sans-serif"
                 >

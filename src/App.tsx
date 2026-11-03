@@ -630,7 +630,9 @@ export default function App() {
         {/* 4. Блок интерактивной карты, заполняющий все пространство */}
         <div
           className={`w-full flex-1 transition-all duration-300 ${
-            currentMode === 'LEARNING'
+            currentMode === 'EXPLORE'
+              ? 'min-h-[500px] sm:min-h-[520px] lg:min-h-[580px]'
+              : currentMode === 'LEARNING'
               ? 'min-h-[460px] sm:min-h-[520px] lg:min-h-[580px]'
               : 'min-h-[340px] sm:min-h-[400px] lg:min-h-[460px]'
           }`}
