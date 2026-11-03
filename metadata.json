@@ -1,0 +1,6 @@
+{
+  "name": "TerraQuiz - Capitals & Countries World Map Quiz",
+  "description": "Interactive world map quiz to test and master countries, capitals, and flags with score tracking, continent filters, and interactive map exploration.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
